@@ -2,6 +2,7 @@
 using BeautifulLyricsMobileV2.Entities;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using SpotifyAPI.Web;
 using System.Text;
 
 namespace BeautifulLyricsToLrc
@@ -10,17 +11,55 @@ namespace BeautifulLyricsToLrc
     {
         static async Task Main(string[] args)
         {
-            Console.WriteLine("What directory do you want the files saved in? (Paste the directory here)");
-            string directory = Console.ReadLine();
+            string directory = "";
 
-            if (!Directory.Exists(directory))
-                Directory.CreateDirectory(directory);
+            if(File.Exists("directory.txt") && !string.IsNullOrWhiteSpace(File.ReadAllText("directory.txt")))
+                directory = File.ReadAllText("directory.txt").Trim();
+            else
+            {
+                Console.WriteLine("What directory do you want the files saved in? (Paste the directory here)");
+                directory = Console.ReadLine();
 
-            Console.WriteLine();
-            Console.WriteLine("What is the Spotify ID?");
-            string spotifyId = Console.ReadLine();
+                File.WriteAllText("directory.txt", directory.Trim());
+                Console.WriteLine();
+            }
 
-            HttpClient client = new HttpClient
+            Directory.CreateDirectory(directory);
+
+            var config = SpotifyClientConfig.CreateDefault();
+
+            var request = new ClientCredentialsRequest("4d42ec7301a64d57bc1971655116a3b9", "0423d7b832114aa086a2034e2cde0138"); // oh no, my secret is in here!
+            var authResponse = await new OAuthClient(config).RequestToken(request);
+
+            SpotifyClient spotify = new SpotifyClient(config.WithToken(authResponse.AccessToken));
+
+            while(true)
+            {
+                Console.Clear();
+                await DoThing(spotify, directory);
+            }
+        }
+
+        static async Task DoThing(SpotifyClient spotify, string directory)
+        {
+            // https://open.spotify.com/track/59KOoHFcw5XfICnO57holu?si=e1c02f861122456f
+            Console.WriteLine("What is the Spotify URL?");
+            string spotifyUrl = Console.ReadLine();
+
+            if(spotifyUrl.ToLower() == "exit" || spotifyUrl.ToLower() == "quit" || spotifyUrl.ToLower() == "q")
+                Environment.Exit(0);
+
+            if (!Uri.IsWellFormedUriString(spotifyUrl, UriKind.Absolute) || !spotifyUrl.Contains("spotify"))
+            {
+                Console.WriteLine("Invalid URL");
+                return;
+            }
+
+            string spotifyId = spotifyUrl.Split('/')[4].Trim().Split('?')[0].Trim();
+
+            FullTrack track = await spotify.Tracks.Get(spotifyId);
+
+            using HttpClient client = new HttpClient
             {
                 BaseAddress = new Uri("https://beautiful-lyrics.socalifornian.live/lyrics/")
             };
@@ -73,42 +112,50 @@ namespace BeautifulLyricsToLrc
                     else if (line is SyllableVocalSet set)
                     {
                         StringBuilder sb = new StringBuilder();
+                        StringBuilder backgroundSb = new StringBuilder();
 
                         bool previousIsPartOfWord = false;
                         foreach (var syllable in set.Lead.Syllables)
                         {
                             TimeSpan wordTime = TimeSpan.FromSeconds(syllable.StartTime);
                             string wordTimeText = string.Format("{0:D2}:{1:D2}.{2:D2}", (int)wordTime.TotalMinutes, wordTime.Seconds, wordTime.Milliseconds);
-                            sb.Append(syllable.IsPartOfWord ? (previousIsPartOfWord ? syllable.Text : $"<{wordTimeText}>{syllable.Text}") : (previousIsPartOfWord ? $"{syllable.Text} " : $"<{wordTimeText}>{syllable.Text} "));
+                            sb.Append(syllable.IsPartOfWord ? $"<{wordTimeText}>{syllable.Text}" : $"<{wordTimeText}>{syllable.Text} ");
+                            //sb.Append(syllable.IsPartOfWord ? (previousIsPartOfWord ? syllable.Text : $"<{wordTimeText}>{syllable.Text}") : (previousIsPartOfWord ? $"{syllable.Text} " : $"<{wordTimeText}>{syllable.Text} "));
                             previousIsPartOfWord = syllable.IsPartOfWord;
                         }
 
-                        // For line by line use
-                        /*if (set.Background != null)
+                        if (set.Background != null)
                         {
-                            int i = 0;
-
                             foreach (var background in set.Background)
                             {
                                 foreach (var syllable in background.Syllables)
                                 {
-                                    if (i == 0)
-                                        sb.Append(syllable.IsPartOfWord ? $"({syllable.Text}" : $"({syllable.Text} ");
-                                    else if (i == set.Background[0].Syllables.Count - 1)
-                                        sb.Append(syllable.IsPartOfWord ? $"{syllable.Text})" : $"{syllable.Text})");
-                                    else
-                                        sb.Append(syllable.IsPartOfWord ? $"{syllable.Text}" : $"{syllable.Text} ");
+                                    TimeSpan wordTime = TimeSpan.FromSeconds(syllable.StartTime);
+                                    string wordTimeText = string.Format("{0:D2}:{1:D2}.{2:D2}", (int)wordTime.TotalMinutes, wordTime.Seconds, wordTime.Milliseconds);
 
-                                    i++;
+                                    backgroundSb.Append(syllable.IsPartOfWord ? $"<{wordTimeText}>{syllable.Text}" : $"<{wordTimeText}>{syllable.Text} ");
                                 }
                             }
-                        }*/
+                        }
 
                         string lineContent = sb.ToString().Trim();
                         TimeSpan time = TimeSpan.FromSeconds(set.Lead.StartTime);
                         string timeText = string.Format("{0:D2}:{1:D2}.{2:D2}", (int)time.TotalMinutes, time.Seconds, time.Milliseconds);
+                        TimeSpan endTime = TimeSpan.FromSeconds(set.Lead.EndTime);
+                        string endTimeText = string.Format("{0:D2}:{1:D2}.{2:D2}", (int)endTime.TotalMinutes, endTime.Seconds, endTime.Milliseconds);
 
-                        lines.Add($"[{timeText}] {lineContent}");
+                        string alignment = set.OppositeAligned ? "v2:" : "v1:";
+                        lines.Add($"[{timeText}]{alignment} {lineContent}<{endTimeText}>");
+
+                        if(set.Background != null)
+                        {
+                            TimeSpan backgroundTime = TimeSpan.FromSeconds(set.Background[0].StartTime);
+                            string backgroundTimeText = string.Format("{0:D2}:{1:D2}.{2:D2}", (int)backgroundTime.TotalMinutes, backgroundTime.Seconds, backgroundTime.Milliseconds);
+                            TimeSpan backgroundEndTime = TimeSpan.FromSeconds(set.Background[0].EndTime);
+                            string backgroundEndTimeText = string.Format("{0:D2}:{1:D2}.{2:D2}", (int)backgroundEndTime.TotalMinutes, backgroundEndTime.Seconds, backgroundEndTime.Milliseconds);
+
+                            lines.Add($"[{backgroundTimeText}][bg:]{alignment} {backgroundSb.ToString().Trim()}<{backgroundEndTimeText}>");
+                        }
                     }
                 }
             }
@@ -148,7 +195,7 @@ namespace BeautifulLyricsToLrc
                 return;
             }
 
-            File.WriteAllText(Path.Combine(directory, $"{spotifyId}.lrc"), string.Join("\n", lines));
+            File.WriteAllText(Path.Combine(directory, $"{track.Artists[0].Name} - {track.Name}.lrc"), string.Join("\n", lines));
             Console.WriteLine($"Done! Lyrics saved to {Path.Combine(directory, $"{spotifyId}.lrc")}");
 
             Console.ReadLine();
